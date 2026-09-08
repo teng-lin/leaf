@@ -30,7 +30,7 @@ pub(crate) struct AutoCompleteArg {
     pub(crate) mode: AutoCompleteMode,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 pub(crate) struct CliOptions {
     pub(crate) picker: bool,
     pub(crate) watch: bool,
@@ -46,6 +46,10 @@ pub(crate) struct CliOptions {
     pub(crate) editor: Option<String>,
     pub(crate) inline: Option<InlineSpec>,
     pub(crate) width: Option<usize>,
+    pub(crate) node_spacing: Option<f64>,
+    pub(crate) rank_spacing: Option<f64>,
+    pub(crate) edge_spacing: Option<f64>,
+    pub(crate) mermaid_full: bool,
     pub(crate) history: Option<HistoryAction>,
     pub(crate) fuzzy: bool,
     pub(crate) fuzzy_query: Option<String>,
@@ -85,6 +89,10 @@ pub(crate) fn usage_text() -> &'static str {
      \x20 -e, --editor <NAME>          Set external editor (nano|vim|code|subl|emacs)\n\
      \x20     --inline [SPEC]          Render to stdout (no TUI) [ansi|plain][:<width>]\n\
      \x20     --width <N>              Set maximum content width (min: 20)\n\
+     \x20     --node-spacing <N>       Mermaid node spacing (0..500; default 50)\n\
+     \x20     --rank-spacing <N>       Mermaid rank spacing (0..500; default 50)\n\
+     \x20     --edge-spacing <N>       Mermaid edge spacing (0..500; default 20)\n\
+     \x20     --mermaid-full           With --inline, emit complete unwrapped diagrams\n\
      \x20     --fuzzy [KEYWORD]        Open the fuzzy file picker (KEYWORD pre-fills the filter)\n\
      \x20     --picker                 Open the file browser picker\n\
      \x20 -H, --history [SPEC]         Open picker, or [edit|remove|list:<n>] file history\n\
@@ -123,6 +131,20 @@ pub(crate) fn parse_cli(args: &[String]) -> Result<CliOptions> {
 
         match arg.as_str() {
             "--picker" => options.picker = true,
+            "--mermaid-full" => options.mermaid_full = true,
+            "--node-spacing" | "--rank-spacing" | "--edge-spacing" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for {arg}"))?;
+                set_spacing_option(&mut options, arg, value)?;
+            }
+            _ if ["--node-spacing=", "--rank-spacing=", "--edge-spacing="]
+                .iter()
+                .any(|prefix| arg.starts_with(prefix)) =>
+            {
+                let (name, value) = arg.split_once('=').unwrap();
+                set_spacing_option(&mut options, name, value)?;
+            }
             "--fuzzy" => {
                 options.fuzzy = true;
                 let take_value = iter
@@ -260,12 +282,23 @@ pub(crate) fn parse_cli(args: &[String]) -> Result<CliOptions> {
             || options.debug_input
             || options.file_arg.is_some()
             || options.theme.is_some()
-            || options.editor.is_some();
+            || options.editor.is_some()
+            || options.node_spacing.is_some()
+            || options.rank_spacing.is_some()
+            || options.edge_spacing.is_some()
+            || options.mermaid_full;
         if has_other {
             anyhow::bail!("{name} must be used on its own");
         }
     }
 
+    if options.mermaid_full
+        && options.inline.is_none()
+        && !options.print_help
+        && !options.print_version
+    {
+        anyhow::bail!("--mermaid-full requires --inline");
+    }
     if options.inline.is_some() {
         if options.watch {
             anyhow::bail!("--inline cannot be combined with --watch");
@@ -308,6 +341,19 @@ fn parse_theme_name(name: &str) -> Result<String> {
         anyhow::bail!("Missing value for --theme");
     }
     Ok(name.to_string())
+}
+
+fn set_spacing_option(options: &mut CliOptions, name: &str, value: &str) -> Result<()> {
+    let spacing = crate::config::parse_mermaid_spacing(value).ok_or_else(|| {
+        anyhow::anyhow!("{name}: expected a finite number from 0 to 500, got '{value}'")
+    })?;
+    match name {
+        "--node-spacing" => options.node_spacing = Some(spacing),
+        "--rank-spacing" => options.rank_spacing = Some(spacing),
+        "--edge-spacing" => options.edge_spacing = Some(spacing),
+        _ => unreachable!(),
+    }
+    Ok(())
 }
 
 const KNOWN_SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell", "nushell"];

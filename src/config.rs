@@ -38,11 +38,71 @@ pub(crate) struct LeafConfig {
     )]
     pub(crate) file_history_length: Option<i32>,
     pub(crate) themes: BTreeMap<String, CustomThemeConfig>,
+    pub(crate) mermaid: MermaidConfig,
     #[serde(skip)]
     pub(crate) config_dir: Option<PathBuf>,
 }
 
 pub(crate) const FILE_HISTORY_LENGTH_MAX: i32 = 50;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub(crate) struct MermaidConfig {
+    #[serde(deserialize_with = "deserialize_spacing")]
+    pub(crate) node_spacing: Option<f64>,
+    #[serde(deserialize_with = "deserialize_spacing")]
+    pub(crate) rank_spacing: Option<f64>,
+    #[serde(deserialize_with = "deserialize_spacing")]
+    pub(crate) edge_spacing: Option<f64>,
+}
+
+pub(crate) fn parse_mermaid_spacing(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && (0.0..=500.0).contains(value))
+}
+
+fn deserialize_spacing<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    let value = toml::Value::deserialize(deserializer)?;
+    let number = value
+        .as_float()
+        .or_else(|| value.as_integer().map(|n| n as f64));
+    Ok(number.filter(|v| v.is_finite() && (0.0..=500.0).contains(v)))
+}
+
+impl MermaidConfig {
+    /// Resolve independently per hint. Invalid environment/config values fall
+    /// through; command-line validation reports invalid explicit flags.
+    pub(crate) fn resolve(
+        &self,
+        cli: [Option<f64>; 3],
+        env: [Option<&str>; 3],
+    ) -> crate::markdown::MermaidOptions {
+        let defaults = crate::markdown::MermaidOptions::default();
+        let config = [self.node_spacing, self.rank_spacing, self.edge_spacing];
+        let fallback = [
+            defaults.node_spacing,
+            defaults.rank_spacing,
+            defaults.edge_spacing,
+        ];
+        let values: [f64; 3] = std::array::from_fn(|i| {
+            cli[i]
+                .or_else(|| env[i].and_then(parse_mermaid_spacing))
+                .or(config[i])
+                .filter(|v| v.is_finite() && (0.0..=500.0).contains(v))
+                .unwrap_or(fallback[i])
+        });
+        crate::markdown::MermaidOptions {
+            node_spacing: values[0],
+            rank_spacing: values[1],
+            edge_spacing: values[2],
+        }
+    }
+}
 
 fn deserialize_lenient_i32<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
 where

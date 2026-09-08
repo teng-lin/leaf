@@ -24,7 +24,7 @@ impl App {
     }
 
     pub(crate) fn is_help_open(&self) -> bool {
-        self.help_open
+        self.help_open || self.is_diagram_open()
     }
 
     pub(crate) fn open_path_popup(&mut self) {

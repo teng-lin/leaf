@@ -31,7 +31,7 @@ _leaf() {
     esac
 
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=($(compgen -W "--help --version --watch --theme --editor --inline --width --picker --fuzzy --history --last --config --update --auto-complete -h -V -w -e -H -l" -- "$cur"))
+        COMPREPLY=($(compgen -W "--help --version --watch --theme --editor --inline --width --node-spacing --rank-spacing --edge-spacing --mermaid-full --picker --fuzzy --history --last --config --update --auto-complete -h -V -w -e -H -l" -- "$cur"))
         return
     fi
 

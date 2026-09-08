@@ -55,6 +55,9 @@ mod links;
 
 mod code_blocks;
 
+mod diagram_worker;
+mod diagrams;
+
 mod io_picker;
 
 mod theme_picker;
@@ -114,6 +117,7 @@ pub(crate) struct AppConfig {
 }
 
 pub(crate) struct App {
+    diagrams: diagrams::DiagramState,
     pub(super) lines: Vec<Line<'static>>,
     pub(super) plain_lines: Vec<String>,
     pub(super) scroll: usize,
@@ -247,6 +251,7 @@ impl App {
             .map(|line| line.to_lowercase())
             .collect();
         let mut app = Self {
+            diagrams: diagrams::DiagramState::default(),
             lines,
             plain_lines,
             scroll: 0,

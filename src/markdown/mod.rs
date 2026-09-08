@@ -18,6 +18,9 @@ mod wrapping;
 
 pub(crate) use highlight::highlight_line;
 pub(crate) use links::LinkSpan;
+pub(crate) use mermaid::{
+    render_mermaid_preview, MermaidCache, MermaidOptions, MermaidPreview, MermaidRenderContext,
+};
 pub(crate) use syntax::resolve_syntax;
 use tables::{handle_table_event, start_table, TableBuf};
 #[cfg(test)]
@@ -86,6 +89,7 @@ pub(crate) fn hash_file_contents(path: &PathBuf) -> io::Result<u64> {
     std::fs::read_to_string(path).map(|contents| hash_str(&contents))
 }
 
+#[cfg(test)]
 const DEFAULT_RENDER_WIDTH: usize = 80;
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -283,6 +287,16 @@ pub(crate) struct CodeBlockInfo {
     pub(crate) raw_content: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct DiagramBlockInfo {
+    pub(crate) ordinal: usize,
+    pub(crate) code_block_index: usize,
+    pub(crate) source: String,
+    pub(crate) rendered_start: usize,
+    pub(crate) rendered_end: usize,
+    pub(crate) source_line: usize,
+}
+
 fn record_code_block(
     code_blocks: &mut Vec<CodeBlockInfo>,
     raw_content: String,
@@ -309,6 +323,7 @@ pub(crate) struct ParseResult {
     pub(crate) line_number_map: Vec<usize>,
     pub(crate) source_line_map: Vec<usize>,
     pub(crate) code_blocks: Vec<CodeBlockInfo>,
+    pub(crate) diagrams: Vec<DiagramBlockInfo>,
 }
 
 impl ParseResult {
@@ -320,6 +335,7 @@ impl ParseResult {
             line_number_map: Vec::new(),
             source_line_map: Vec::new(),
             code_blocks: Vec::new(),
+            diagrams: Vec::new(),
         }
     }
 }
@@ -331,6 +347,7 @@ impl From<ParseResult> for (Vec<Line<'static>>, Vec<TocEntry>, Vec<LinkSpan>, Ve
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_markdown(
     src: &str,
     ss: &syntect::parsing::SyntaxSet,
@@ -350,6 +367,7 @@ pub(crate) fn parse_markdown(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn parse_markdown_with_width(
     src: &str,
     ss: &syntect::parsing::SyntaxSet,
@@ -358,6 +376,29 @@ pub(crate) fn parse_markdown_with_width(
     theme_colors: &MarkdownTheme,
     file_mode: bool,
     code_line_numbers: bool,
+) -> ParseResult {
+    parse_markdown_with_options(
+        src,
+        ss,
+        theme,
+        render_width,
+        theme_colors,
+        file_mode,
+        code_line_numbers,
+        MermaidRenderContext::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn parse_markdown_with_options(
+    src: &str,
+    ss: &syntect::parsing::SyntaxSet,
+    theme: &syntect::highlighting::Theme,
+    render_width: usize,
+    theme_colors: &MarkdownTheme,
+    file_mode: bool,
+    code_line_numbers: bool,
+    mermaid_context: MermaidRenderContext<'_>,
 ) -> ParseResult {
     let original_src = src;
     let (src, fm_pairs) = frontmatter::extract_frontmatter(src);
@@ -382,6 +423,8 @@ pub(crate) fn parse_markdown_with_width(
     let mut code_lang = String::new();
     let mut code_buf = String::new();
     let mut code_blocks: Vec<CodeBlockInfo> = Vec::new();
+    let mut diagrams = Vec::new();
+    let mut code_source_line = 1;
     let mut blockquote_depth = 0usize;
     let mut inline = InlineStyleState::default();
     let mut list_stack: Vec<ListKind> = Vec::new();
@@ -463,6 +506,7 @@ pub(crate) fn parse_markdown_with_width(
                 last_block = LastBlock::Paragraph;
             }
             MdEvent::Start(Tag::CodeBlock(kind)) => {
+                code_source_line = state.current_src_line;
                 if flush_pending_inline_if_any(
                     &mut lines,
                     &mut spans,
@@ -487,6 +531,7 @@ pub(crate) fn parse_markdown_with_width(
             }
             MdEvent::End(TagEnd::CodeBlock) => {
                 in_code = false;
+                let is_mermaid = code_lang == "mermaid";
                 let raw_content = code_buf.clone();
                 let rendered_start = lines.len();
                 let layout = if code_lang == "latex" || code_lang == "tex" {
@@ -507,18 +552,46 @@ pub(crate) fn parse_markdown_with_width(
                     wraps = true;
                     layout
                 } else if code_lang == "mermaid" {
-                    let layout = push_mermaid_block_lines(
-                        &mut lines,
-                        &code_buf,
-                        EmbeddedBlockCtx {
-                            render_width,
-                            theme: theme_colors,
-                            blockquote_depth,
-                            list_stack: &list_stack,
-                            code_line_numbers,
-                        },
-                        &mut item_stack,
-                    );
+                    let layout = if footnotes.is_active() {
+                        let prefix = if !item_stack.is_empty() {
+                            list_item_prefix(
+                                blockquote_depth,
+                                &list_stack,
+                                &mut item_stack,
+                                theme_colors,
+                                None,
+                            )
+                        } else {
+                            block_prefix(blockquote_depth, theme_colors, None)
+                        };
+                        footnotes.defer_diagram(
+                            code_buf.clone(),
+                            code_source_line,
+                            lines.len(),
+                            prefix,
+                        );
+                        // Footnotes are emitted later, with their final prefix width.
+                        // Keep a non-empty placeholder so trimming cannot remove it.
+                        lines.push(Line::from("Mermaid diagram placeholder"));
+                        BlockLayout {
+                            prefix_width: 0,
+                            rendered_width: 0,
+                        }
+                    } else {
+                        push_mermaid_block_lines(
+                            &mut lines,
+                            &code_buf,
+                            EmbeddedBlockCtx {
+                                render_width,
+                                theme: theme_colors,
+                                blockquote_depth,
+                                list_stack: &list_stack,
+                                code_line_numbers,
+                            },
+                            &mut item_stack,
+                            mermaid_context,
+                        )
+                    };
                     code_buf.clear();
                     code_lang.clear();
                     layout
@@ -543,6 +616,16 @@ pub(crate) fn parse_markdown_with_width(
                     layout
                 };
                 if !footnotes.is_active() {
+                    if is_mermaid {
+                        diagrams.push(DiagramBlockInfo {
+                            ordinal: diagrams.len(),
+                            code_block_index: code_blocks.len(),
+                            source: raw_content.clone(),
+                            rendered_start,
+                            rendered_end: lines.len().saturating_sub(1),
+                            source_line: code_source_line,
+                        });
+                    }
                     record_code_block(
                         &mut code_blocks,
                         raw_content,
@@ -815,6 +898,10 @@ pub(crate) fn parse_markdown_with_width(
         &mut link_urls,
         theme_colors,
         render_width,
+        &mut code_blocks,
+        &mut diagrams,
+        code_line_numbers,
+        mermaid_context,
     );
     for _ in 0..5 {
         lines.push(Line::from(""));
@@ -828,6 +915,7 @@ pub(crate) fn parse_markdown_with_width(
         line_number_map: state.line_number_map,
         source_line_map: state.source_line_map,
         code_blocks,
+        diagrams,
     }
 }
 

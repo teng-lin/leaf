@@ -19,6 +19,10 @@ pub(super) fn handle_key_event(
     ss: &SyntaxSet,
     themes: &ThemeSet,
 ) -> anyhow::Result<HandleResult> {
+    if app.is_diagram_open() {
+        handle_diagram_key(app, key);
+        return Ok(HandleResult::Continue { redraw: true });
+    }
     if matches!(key.code, KeyCode::Char('m') | KeyCode::Char('M'))
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
@@ -312,6 +316,10 @@ pub(super) fn handle_key_event(
             _ => state_changed = false,
         }
     } else {
+        if key.code == KeyCode::Char('v') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.open_diagram();
+            return Ok(HandleResult::Continue { redraw: true });
+        }
         let mut mode_exited = false;
         if app.is_code_select_mode() {
             let mode_handled = handle_code_select_key(app, &key);
@@ -451,6 +459,48 @@ pub(super) fn handle_key_event(
     })
 }
 
+fn handle_diagram_key(app: &mut App, key: KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if app.diagram_viewer().is_some_and(|v| v.help) {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+            app.toggle_diagram_help();
+        }
+        return;
+    }
+    if app.is_diagram_search() {
+        match key.code {
+            KeyCode::Esc => app.cancel_diagram_search(),
+            KeyCode::Char('c') if ctrl => app.cancel_diagram_search(),
+            KeyCode::Enter => app.confirm_diagram_search(),
+            KeyCode::Backspace => app.edit_diagram_search(None),
+            KeyCode::Down | KeyCode::Tab => app.move_diagram_search(false),
+            KeyCode::Up | KeyCode::BackTab => app.move_diagram_search(true),
+            KeyCode::Char(c) if !ctrl => app.edit_diagram_search(Some(c)),
+            _ => {}
+        }
+        return;
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_diagram(),
+        KeyCode::Char('c') if ctrl => app.close_diagram(),
+        KeyCode::Left | KeyCode::Char('h') => app.pan_diagram(-3, 0),
+        KeyCode::Right | KeyCode::Char('l') => app.pan_diagram(3, 0),
+        KeyCode::Up | KeyCode::Char('k') => app.pan_diagram(0, -1),
+        KeyCode::Down | KeyCode::Char('j') => app.pan_diagram(0, 1),
+        KeyCode::PageUp => app.diagram_page(false),
+        KeyCode::PageDown => app.diagram_page(true),
+        KeyCode::Home => app.reset_diagram_pan(),
+        KeyCode::Tab => app.select_next_diagram_object(false),
+        KeyCode::BackTab => app.select_next_diagram_object(true),
+        KeyCode::Char('/') => app.begin_diagram_search(),
+        KeyCode::Char('?') => app.toggle_diagram_help(),
+        KeyCode::Char(c @ ('c' | 'd' | 'o' | ' ' | 'a' | 'f' | 's' | 'y')) if !ctrl => {
+            app.diagram_control(c)
+        }
+        _ => {}
+    }
+}
+
 fn handle_code_select_key(app: &mut App, key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -496,5 +546,48 @@ fn try_code_select_entry(app: &mut App, key: &KeyEvent) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod diagram_key_tests {
+    use super::*;
+
+    #[test]
+    fn diagram_search_m_is_text_and_escape_cancels_before_closing() {
+        let mut app = App::new(
+            Vec::new(),
+            Vec::new(),
+            "keys.md".into(),
+            false,
+            false,
+            None,
+            None,
+        );
+        app.content_area = ratatui::layout::Rect::new(0, 0, 80, 30);
+        app.set_diagrams(vec![crate::markdown::DiagramBlockInfo {
+            ordinal: 0,
+            code_block_index: 0,
+            source: "".into(),
+            rendered_start: 0,
+            rendered_end: 1,
+            source_line: 1,
+        }]);
+        // Selection makes this fixture independent of document text visibility.
+        app.code_select = Some(0);
+        app.open_diagram();
+        app.begin_diagram_search();
+        let capture = app.is_mouse_capture_enabled();
+        handle_diagram_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.diagram_viewer().unwrap().search.as_deref(), Some("m"));
+        assert_eq!(app.is_mouse_capture_enabled(), capture);
+        handle_diagram_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.is_diagram_open());
+        assert!(!app.is_diagram_search());
+        handle_diagram_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.is_diagram_open());
     }
 }

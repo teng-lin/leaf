@@ -91,6 +91,9 @@ pub(crate) fn run(
     sync_render_width(terminal, app, ss, themes)?;
 
     loop {
+        if app.poll_diagrams(ss, themes) {
+            needs_redraw = true;
+        }
         if app.has_pending_picker() && !app.is_picker_loading() {
             let _ = app.start_pending_picker_loading();
             needs_redraw = true;
@@ -137,6 +140,11 @@ pub(crate) fn run(
         let resize_timeout =
             pending_resize.and_then(|started| RESIZE_DEBOUNCE.checked_sub(started.elapsed()));
         let poll_timeout = [
+            if app.has_diagram_work() {
+                Some(Duration::from_millis(50))
+            } else {
+                None
+            },
             if app.is_watch_enabled() {
                 Some(WATCH_INTERVAL)
             } else {
@@ -217,7 +225,7 @@ pub(crate) fn run(
                     }
                 }
                 Event::Resize(_, _) => {
-                    if app.exit_code_select_mode() {
+                    if !app.is_diagram_open() && app.exit_code_select_mode() {
                         needs_redraw = true;
                     }
                     pending_resize = Some(Instant::now());

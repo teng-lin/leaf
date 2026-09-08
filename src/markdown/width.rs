@@ -1,7 +1,39 @@
 use ratatui::text::Line;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(super) const TAB_STOP: usize = 4;
+
+/// Slice a terminal canvas by cells, preserving whole graphemes. A partially
+/// visible wide glyph becomes spaces so that everything to its right stays put.
+pub(crate) fn slice_display_columns(text: &str, start: usize, end: usize) -> String {
+    if end <= start {
+        return String::new();
+    }
+    let mut result = String::new();
+    let mut column = 0usize;
+    for grapheme in text.graphemes(true) {
+        if column >= end {
+            break;
+        }
+        let width = if grapheme == "\t" {
+            TAB_STOP - column % TAB_STOP
+        } else {
+            UnicodeWidthStr::width(grapheme)
+        };
+        let next = column.saturating_add(width);
+        if width > 0 && next > start {
+            let visible = next.min(end).saturating_sub(column.max(start));
+            if grapheme == "\t" || column < start || next > end {
+                result.push_str(&" ".repeat(visible));
+            } else {
+                result.extend(grapheme.chars().filter(|c| !c.is_control()));
+            }
+        }
+        column = next;
+    }
+    result
+}
 
 pub(crate) fn line_plain_text(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()

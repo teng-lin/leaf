@@ -4,6 +4,8 @@ use ratatui::{
     text::Line,
 };
 use std::io::Write;
+use std::ops::RangeInclusive;
+use unicode_segmentation::UnicodeSegmentation;
 
 const DEFAULT_WIDTH: usize = 80;
 const MIN_WIDTH: usize = 20;
@@ -111,13 +113,29 @@ pub(crate) fn resolve_format(spec: &InlineSpec, is_stdout_terminal: bool) -> Res
     }
 }
 
+#[cfg(test)]
 pub(crate) fn write_lines<W: Write>(
     lines: &[Line<'_>],
     format: ResolvedFormat,
     max_width: usize,
     writer: &mut W,
 ) -> Result<()> {
-    for line in lines {
+    write_lines_with_unwrapped(lines, format, max_width, &[], writer)
+}
+
+pub(crate) fn write_lines_with_unwrapped<W: Write>(
+    lines: &[Line<'_>],
+    format: ResolvedFormat,
+    max_width: usize,
+    unwrapped: &[RangeInclusive<usize>],
+    writer: &mut W,
+) -> Result<()> {
+    for (index, line) in lines.iter().enumerate() {
+        let max_width = if unwrapped.iter().any(|range| range.contains(&index)) {
+            usize::MAX
+        } else {
+            max_width
+        };
         match format {
             ResolvedFormat::Ansi => write_line_ansi(line, max_width, writer)?,
             ResolvedFormat::Plain => write_line_plain(line, max_width, writer)?,
@@ -139,8 +157,8 @@ fn write_line_ansi<W: Write>(line: &Line<'_>, max_width: usize, writer: &mut W) 
             write_ansi_style(writer, fg, bg, mods)?;
         }
 
-        for ch in span.content.chars() {
-            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        for grapheme in span.content.graphemes(true) {
+            let ch_width = unicode_width::UnicodeWidthStr::width(grapheme);
             if col + ch_width > max_width && col > 0 {
                 if has_style {
                     write_bytes(writer, b"\x1b[0m")?;
@@ -151,8 +169,7 @@ fn write_line_ansi<W: Write>(line: &Line<'_>, max_width: usize, writer: &mut W) 
                     write_ansi_style(writer, fg, bg, mods)?;
                 }
             }
-            let mut buf = [0u8; 4];
-            write_bytes(writer, ch.encode_utf8(&mut buf).as_bytes())?;
+            write_bytes(writer, grapheme.as_bytes())?;
             col += ch_width;
         }
 
@@ -167,14 +184,13 @@ fn write_line_ansi<W: Write>(line: &Line<'_>, max_width: usize, writer: &mut W) 
 fn write_line_plain<W: Write>(line: &Line<'_>, max_width: usize, writer: &mut W) -> Result<()> {
     let mut col = 0usize;
     for span in &line.spans {
-        for ch in span.content.chars() {
-            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        for grapheme in span.content.graphemes(true) {
+            let ch_width = unicode_width::UnicodeWidthStr::width(grapheme);
             if col + ch_width > max_width && col > 0 {
                 write_bytes(writer, b"\n")?;
                 col = 0;
             }
-            let mut buf = [0u8; 4];
-            write_bytes(writer, ch.encode_utf8(&mut buf).as_bytes())?;
+            write_bytes(writer, grapheme.as_bytes())?;
             col += ch_width;
         }
     }
