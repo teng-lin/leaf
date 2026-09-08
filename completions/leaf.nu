@@ -21,6 +21,10 @@ export extern "leaf" [
   --editor(-e): string@"nu-complete leaf editors"
   --inline: string@"nu-complete leaf inline"
   --width: int
+  --node-spacing: float
+  --rank-spacing: float
+  --edge-spacing: float
+  --mermaid-full
   --picker
   --fuzzy: string
   --history(-H): string@"nu-complete leaf history"

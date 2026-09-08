@@ -134,6 +134,14 @@ impl DefinitionSnapshot {
 pub(super) struct ActiveDefinition {
     pub(super) label: String,
     pub(super) snapshot: DefinitionSnapshot,
+    diagrams: Vec<DeferredDiagram>,
+}
+
+struct DeferredDiagram {
+    source: String,
+    source_line: usize,
+    placeholder: usize,
+    prefix: Vec<Span<'static>>,
 }
 
 #[derive(Default)]
@@ -144,6 +152,7 @@ pub(super) struct FootnotesBuf {
     definitions: HashMap<String, Vec<Line<'static>>>,
     def_source_line: HashMap<String, usize>,
     def_link_urls: HashMap<String, Vec<String>>,
+    def_diagrams: HashMap<String, Vec<DeferredDiagram>>,
     active: Option<ActiveDefinition>,
 }
 
@@ -168,7 +177,28 @@ impl FootnotesBuf {
             self.defs_order.push(label.clone());
         }
         self.def_source_line.insert(label.clone(), src_line);
-        self.active = Some(ActiveDefinition { label, snapshot });
+        self.active = Some(ActiveDefinition {
+            label,
+            snapshot,
+            diagrams: Vec::new(),
+        });
+    }
+
+    pub(super) fn defer_diagram(
+        &mut self,
+        source: String,
+        source_line: usize,
+        placeholder: usize,
+        prefix: Vec<Span<'static>>,
+    ) {
+        if let Some(active) = &mut self.active {
+            active.diagrams.push(DeferredDiagram {
+                source,
+                source_line,
+                placeholder,
+                prefix,
+            });
+        }
     }
 
     pub(super) fn finish_definition(
@@ -176,11 +206,16 @@ impl FootnotesBuf {
         captured_lines: Vec<Line<'static>>,
         captured_link_urls: Vec<String>,
     ) -> DefinitionSnapshot {
-        let ActiveDefinition { label, snapshot } = self
+        let ActiveDefinition {
+            label,
+            snapshot,
+            diagrams,
+        } = self
             .active
             .take()
             .expect("finish_definition without active definition");
         self.definitions.insert(label.clone(), captured_lines);
+        self.def_diagrams.insert(label.clone(), diagrams);
         self.def_link_urls.insert(label, captured_link_urls);
         snapshot
     }
@@ -189,6 +224,7 @@ impl FootnotesBuf {
         self.active.is_some()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn flush(
         &mut self,
         lines: &mut Vec<Line<'static>>,
@@ -196,6 +232,10 @@ impl FootnotesBuf {
         link_urls: &mut Vec<String>,
         theme: &MarkdownTheme,
         render_width: usize,
+        code_blocks: &mut Vec<super::CodeBlockInfo>,
+        diagrams: &mut Vec<super::DiagramBlockInfo>,
+        code_line_numbers: bool,
+        mermaid_context: super::MermaidRenderContext<'_>,
     ) {
         if self.definitions.is_empty() {
             return;
@@ -245,7 +285,79 @@ impl FootnotesBuf {
             let prefix_width = display_width(&prefix_text);
             let indent = " ".repeat(prefix_width);
             let mut first = true;
-            for def_line in def_lines {
+            let mut deferred = self
+                .def_diagrams
+                .remove(&label)
+                .unwrap_or_default()
+                .into_iter()
+                .peekable();
+            for (index, def_line) in def_lines.into_iter().enumerate() {
+                if deferred
+                    .peek()
+                    .is_some_and(|diagram| diagram.placeholder == index)
+                {
+                    let diagram = deferred.next().unwrap();
+                    state.mark_all_new(lines.len());
+                    let source_line = state.current_src_line;
+                    state.current_src_line = diagram.source_line;
+                    let nested_width: usize = diagram
+                        .prefix
+                        .iter()
+                        .map(|span| display_width(&span.content))
+                        .sum();
+                    let available = render_width.saturating_sub(prefix_width + nested_width);
+                    let mut diagram_lines = Vec::new();
+                    let layout = super::blocks::push_mermaid_block_lines(
+                        &mut diagram_lines,
+                        &diagram.source,
+                        super::blocks::EmbeddedBlockCtx {
+                            render_width: available,
+                            theme,
+                            blockquote_depth: 0,
+                            list_stack: &[],
+                            code_line_numbers,
+                        },
+                        &mut [],
+                        mermaid_context,
+                    );
+                    let rendered_start = lines.len();
+                    for mut line in diagram_lines {
+                        let mut prefix = vec![Span::styled(
+                            if first {
+                                prefix_text.clone()
+                            } else {
+                                indent.clone()
+                            },
+                            Style::default().fg(theme.footnote_ref),
+                        )];
+                        first = false;
+                        prefix.extend(diagram.prefix.clone());
+                        prefix.append(&mut line.spans);
+                        lines.push(Line::from(prefix));
+                    }
+                    let rendered_end = lines.len().saturating_sub(1);
+                    diagrams.push(super::DiagramBlockInfo {
+                        ordinal: diagrams.len(),
+                        code_block_index: code_blocks.len(),
+                        source: diagram.source.clone(),
+                        rendered_start,
+                        rendered_end,
+                        source_line: diagram.source_line,
+                    });
+                    super::record_code_block(
+                        code_blocks,
+                        diagram.source,
+                        rendered_start,
+                        rendered_end,
+                        super::blocks::BlockLayout {
+                            prefix_width: prefix_width + nested_width,
+                            rendered_width: layout.rendered_width,
+                        },
+                    );
+                    state.mark_all_new(lines.len());
+                    state.current_src_line = source_line;
+                    continue;
+                }
                 let mut body: Vec<Span<'static>> = def_line.spans.into_iter().collect();
                 recolor_default_text(&mut body, theme.text, theme.footnote_text);
                 if first {
