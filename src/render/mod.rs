@@ -1,4 +1,5 @@
 mod content;
+mod diagram;
 mod popup;
 mod popup_picker;
 mod status;
@@ -19,6 +20,10 @@ pub(crate) const CONTENT_HORIZONTAL_PADDING: u16 = 1;
 pub(crate) const SCROLLBAR_WIDTH: u16 = 1;
 
 pub(crate) fn ui(f: &mut Frame, app: &mut App) {
+    if app.is_diagram_open() {
+        diagram::render_diagram(f, app);
+        return;
+    }
     let area = f.area();
     let root = Layout::default()
         .direction(Direction::Vertical)

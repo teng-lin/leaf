@@ -26,6 +26,7 @@ mod markdown_links;
 mod markdown_list_blocks;
 mod markdown_lists;
 mod markdown_tables;
+mod mermaid_views;
 mod picker_width;
 mod render;
 mod theme;

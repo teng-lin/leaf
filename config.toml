@@ -97,3 +97,14 @@ watch = false
 # Maximum accepted: 50. Values above are clamped.
 # Default: 0 (disables history recording)
 # file-history-length = 0
+
+# Mermaid layout hints, in engine units (not terminal columns).
+# Priority per field: CLI flag > LEAF_MERMAID_*_SPACING > config > defaults.
+# Finite numbers 0..500. Compact example: 8 / 15 / 8.
+# Node = siblings, rank = flow direction, edge = competing routing lanes.
+# Node/rank cell-gap minimum: ceil(value / 5), at least 4 columns / 3 rows.
+# Spacing does not guarantee a large graph fits: press v for the diagram viewer.
+[mermaid]
+# node-spacing = 50
+# rank-spacing = 50
+# edge-spacing = 20

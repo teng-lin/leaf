@@ -1,0 +1,3 @@
+#!/bin/sh
+# Used only by the isolated terminal harness; never touches the system clipboard.
+exec tee "$LEAF_TEST_CLIPBOARD" >/dev/null

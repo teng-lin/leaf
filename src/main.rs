@@ -29,7 +29,7 @@ mod update;
 
 use app::{App, AppConfig};
 use cli::{parse_cli, print_usage, print_version, CliOptions};
-use markdown::{hash_str, parse_markdown, parse_markdown_with_width, read_file_state};
+use markdown::{hash_str, read_file_state};
 use runtime::run;
 use terminal::{finish_with_restore, TerminalSession};
 use theme::{
@@ -243,6 +243,10 @@ fn main() -> Result<()> {
         editor: cli_editor,
         inline: mut inline_spec,
         width: cli_width,
+        node_spacing,
+        rank_spacing,
+        edge_spacing,
+        mermaid_full,
         history,
         fuzzy: _fuzzy,
         fuzzy_query,
@@ -255,6 +259,16 @@ fn main() -> Result<()> {
         theme: cli_theme.clone(),
     };
     let (user_config, mut config_warning) = config::load_config(&overrides);
+    let spacing_env = [
+        "LEAF_MERMAID_NODE_SPACING",
+        "LEAF_MERMAID_RANK_SPACING",
+        "LEAF_MERMAID_EDGE_SPACING",
+    ]
+    .map(|name| std::env::var(name).ok());
+    let mermaid_options = user_config.mermaid.resolve(
+        [node_spacing, rank_spacing, edge_spacing],
+        spacing_env.each_ref().map(|v| v.as_deref()),
+    );
 
     let theme_selection = if let Some(theme_name) = cli_theme.as_deref() {
         resolve_theme_selection(theme_name, &user_config.themes, None)
@@ -429,7 +443,7 @@ fn main() -> Result<()> {
         let format = inline::resolve_format(spec, is_tty);
 
         let at = app_theme();
-        let mut parsed = parse_markdown_with_width(
+        let mut parsed = markdown::parse_markdown_with_options(
             &src,
             &ss,
             &theme,
@@ -437,6 +451,11 @@ fn main() -> Result<()> {
             &at.markdown,
             file_mode,
             code_line_numbers,
+            markdown::MermaidRenderContext {
+                options: mermaid_options,
+                cache: None,
+                complete: mermaid_full,
+            },
         );
 
         while parsed.lines.last().is_some_and(|l| {
@@ -445,21 +464,37 @@ fn main() -> Result<()> {
             parsed.lines.pop();
         }
         let lines = parsed.lines;
+        let unwrapped: Vec<_> = if mermaid_full {
+            parsed
+                .diagrams
+                .iter()
+                .map(|d| d.rendered_start..=d.rendered_end)
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         let stdout = io::stdout();
         let mut writer = io::BufWriter::new(stdout.lock());
-        inline::write_lines(&lines, format, width, &mut writer)?;
+        inline::write_lines_with_unwrapped(&lines, format, width, &unwrapped, &mut writer)?;
         return Ok(());
     }
 
     let at = app_theme();
-    let parsed = parse_markdown(
+    let empty_cache = markdown::MermaidCache::new();
+    let parsed = markdown::parse_markdown_with_options(
         &src,
         &ss,
         &theme,
+        80,
         &at.markdown,
         file_mode,
         code_line_numbers,
+        markdown::MermaidRenderContext {
+            options: mermaid_options,
+            cache: Some(&empty_cache),
+            complete: false,
+        },
     );
     let crate::markdown::ParseResult {
         lines,
@@ -468,6 +503,7 @@ fn main() -> Result<()> {
         line_number_map,
         source_line_map,
         code_blocks,
+        diagrams,
     } = parsed;
     let mut app = App::new_with_source(
         lines,
@@ -483,6 +519,8 @@ fn main() -> Result<()> {
     );
     app.set_link_spans(link_spans);
     app.set_code_blocks(code_blocks);
+    app.set_mermaid_options(mermaid_options);
+    app.set_diagrams(diagrams);
     app.set_line_maps(line_number_map, source_line_map);
     app.set_last_content_hash(last_content_hash);
     app.set_watch_from_config(watch_from_config);

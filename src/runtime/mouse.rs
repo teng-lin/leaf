@@ -16,6 +16,25 @@ use super::DOUBLE_CLICK_THRESHOLD;
 pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> bool {
     let prev_pos = app.mouse_position;
     app.mouse_position = (mouse.column, mouse.row);
+    if app.is_diagram_open() {
+        if app
+            .diagram_viewer()
+            .is_some_and(|v| v.help || v.search.is_some())
+        {
+            return true;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => app.pan_diagram(0, -3),
+            MouseEventKind::ScrollDown => app.pan_diagram(0, 3),
+            MouseEventKind::ScrollLeft => app.pan_diagram(-3, 0),
+            MouseEventKind::ScrollRight => app.pan_diagram(3, 0),
+            MouseEventKind::Down(MouseButton::Left) => {
+                app.select_diagram_at(mouse.column, mouse.row)
+            }
+            _ => {}
+        }
+        return true;
+    }
     let state_changed = if app.is_path_popup_open() {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {

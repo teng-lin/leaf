@@ -499,36 +499,276 @@ pub(super) fn push_mermaid_block_lines(
     content: &str,
     ctx: EmbeddedBlockCtx<'_>,
     item_stack: &mut [ItemState],
+    context: mermaid::MermaidRenderContext<'_>,
 ) -> BlockLayout {
-    let rendered = mermaid::render(content);
-    let use_rendered = rendered.is_some();
-    let content_lines: Vec<&str> = if let Some(ref r) = rendered {
-        r.lines().collect()
+    use super::width::slice_display_columns;
+    use std::sync::Arc;
+
+    const PREVIEW_ROWS: usize = 24;
+    let rendered = if content.len() > mmdflux::TextLimits::default().max_source_bytes {
+        Some(Err(
+            "Mermaid source exceeds the input limit; source remains copyable".into(),
+        ))
     } else {
-        content.lines().collect()
+        match context.cache {
+            Some(cache) => cache.get(content).cloned(),
+            None => Some(
+                mermaid::render_mermaid_preview(content, context.options, context.complete)
+                    .map(Arc::new),
+            ),
+        }
     };
-    let content_style = Style::default().fg(ctx.theme.mermaid_block_fg);
-    push_special_block_lines(
+    let (body, warning, use_rendered) = match rendered.as_ref() {
+        Some(Ok(preview)) => (preview.text.as_str(), preview.warning.as_deref(), true),
+        Some(Err(error)) => (content, Some(error.as_str()), false),
+        None => ("Loading diagram…", None, false),
+    };
+    let content_lines: Vec<&str> = body.lines().collect();
+    let (canvas_width, canvas_height) = match rendered.as_ref() {
+        Some(Ok(preview)) => (preview.width, preview.height),
+        _ => (
+            content_lines
+                .iter()
+                .map(|l| display_width(l))
+                .max()
+                .unwrap_or(0),
+            content_lines.len(),
+        ),
+    };
+    let mut prefix = if !item_stack.is_empty() {
+        list_item_prefix(
+            ctx.blockquote_depth,
+            ctx.list_stack,
+            item_stack,
+            ctx.theme,
+            None,
+        )
+    } else {
+        block_prefix(ctx.blockquote_depth, ctx.theme, None)
+    };
+    let mut prefix_width: usize = prefix.iter().map(|s| display_width(&s.content)).sum();
+    if !context.complete && prefix_width > ctx.render_width.saturating_sub(4) {
+        let text: String = prefix.iter().map(|s| s.content.as_ref()).collect();
+        let clipped = slice_display_columns(&text, 0, ctx.render_width.saturating_sub(4));
+        prefix_width = display_width(&clipped);
+        prefix = vec![Span::raw(clipped)];
+    }
+    let numbered = !use_rendered && rendered.is_some() && ctx.code_line_numbers;
+    let digits = if numbered {
+        content_lines.len().max(1).to_string().len()
+    } else {
+        0
+    };
+    let gutter = if numbered { digits + 2 } else { 2 };
+    let available = ctx.render_width.saturating_sub(prefix_width);
+    // A rejected source can have one huge line and many short ones. Do not
+    // multiply its longest line by its row count to pad a fallback rectangle.
+    let source_complete = context.complete && matches!(rendered, Some(Err(_)));
+    let frame_width = if source_complete {
+        44
+    } else if context.complete {
+        canvas_width.saturating_add(gutter + 2).max(44)
+    } else {
+        canvas_width
+            .saturating_add(gutter + 2)
+            .max(44)
+            .min(available)
+    };
+    let body_width = frame_width.saturating_sub(gutter + 2);
+    let preview = rendered.as_ref().and_then(|result| result.as_ref().ok());
+    // A narrow diagram can use ordinary document scrolling. Only wide
+    // canvases need a height-limited preview; preserve every row when it fits.
+    let full_height = context.complete || (use_rendered && canvas_width <= body_width);
+    let (start_x, mut start_y) = if full_height {
+        (0, 0)
+    } else {
+        preview.map_or((0, 0), |p| p.preview_origin(body_width, PREVIEW_ROWS))
+    };
+    let mut end_x = start_x.saturating_add(body_width);
+    if !context.complete {
+        // A row of overview boxes can end at a group boundary instead of
+        // showing half a group's label. The remaining frame cells stay blank.
+        if let Some(edge) = preview.filter(|p| p.overview).and_then(|p| {
+            p.nodes
+                .iter()
+                .filter(|node| node.x < end_x && node.x.saturating_add(node.width) > end_x)
+                .map(|node| node.x)
+                .min()
+        }) {
+            if edge > start_x.saturating_add(body_width / 2) {
+                end_x = edge;
+            }
+        }
+    }
+    let mut end_y = if full_height {
+        content_lines.len()
+    } else {
+        start_y
+            .saturating_add(PREVIEW_ROWS)
+            .min(content_lines.len())
+    };
+    if !full_height {
+        // Keep one row of edge context after the last complete visible node;
+        // a long tail of offscreen routes is not useful as a document preview.
+        if let Some(bottom) = preview.and_then(|p| {
+            p.nodes
+                .iter()
+                .filter(|node| {
+                    node.x < start_x.saturating_add(body_width)
+                        && node.x.saturating_add(node.width) > start_x
+                        && node.y >= start_y
+                        && node.y.saturating_add(node.height) <= end_y
+                })
+                .map(|node| node.y.saturating_add(node.height))
+                .max()
+        }) {
+            end_y = end_y.min(bottom.saturating_add(1));
+        }
+    }
+    // Blank rows elsewhere on a wide canvas must not consume this window's
+    // preview budget. Full exports keep the original geometry byte-for-byte.
+    if !full_height && use_rendered {
+        let empty = |row: &str| slice_display_columns(row, start_x, end_x).trim().is_empty();
+        while start_y < end_y && empty(content_lines[start_y]) {
+            start_y += 1;
+        }
+        while end_y > start_y && empty(content_lines[end_y - 1]) {
+            end_y -= 1;
+        }
+    }
+    let clipped = start_x > 0 || start_y > 0 || canvas_width > body_width || canvas_height > end_y;
+    let frame_style = Style::default().fg(ctx.theme.code_frame);
+    let body_style = Style::default().fg(ctx.theme.mermaid_block_fg);
+    let push_frame = |lines: &mut Vec<Line<'static>>, text: String| {
+        let mut spans = prefix.clone();
+        spans.push(Span::styled(
+            slice_display_columns(&text, 0, frame_width),
+            frame_style,
+        ));
+        lines.push(Line::from(spans));
+    };
+    let push_notice = |lines: &mut Vec<Line<'static>>, text: &str| {
+        if frame_width < 4 {
+            push_frame(lines, text.into());
+            return;
+        }
+        let text = slice_display_columns(text, 0, frame_width - 4);
+        let mut spans = prefix.clone();
+        spans.push(Span::styled("│ ", frame_style));
+        spans.push(Span::styled(
+            text.clone(),
+            Style::default().fg(ctx.theme.text),
+        ));
+        spans.push(Span::styled(
+            format!(
+                "{} │",
+                " ".repeat((frame_width - 4).saturating_sub(display_width(&text)))
+            ),
+            frame_style,
+        ));
+        lines.push(Line::from(spans));
+    };
+    push_frame(
         lines,
-        ctx.render_width,
-        ctx.theme,
-        ctx.blockquote_depth,
-        ctx.list_stack,
-        item_stack,
-        SpecialBlockCtx {
-            label: "mermaid",
-            content_lines: &content_lines,
-            show_line_numbers: !use_rendered && ctx.code_line_numbers,
-            center: use_rendered,
-            make_spans: |line| {
-                if use_rendered {
-                    vec![Span::styled(line.to_string(), content_style)]
-                } else {
-                    mermaid::colorize_line(line, ctx.theme)
-                }
+        format!("┌─ mermaid {}┐", "─".repeat(frame_width.saturating_sub(12))),
+    );
+    for (index, row) in content_lines.iter().enumerate().take(end_y).skip(start_y) {
+        if source_complete {
+            let mut spans = prefix.clone();
+            spans.extend(mermaid::colorize_line(
+                &slice_display_columns(row, 0, usize::MAX),
+                ctx.theme,
+            ));
+            lines.push(Line::from(spans));
+            continue;
+        }
+        let row = slice_display_columns(row, start_x, end_x);
+        let mut spans = prefix.clone();
+        spans.push(Span::styled(
+            if numbered {
+                format!("│{:>digits$}│", index + 1)
+            } else {
+                "│ ".into()
             },
-        },
-    )
+            frame_style,
+        ));
+        if use_rendered || rendered.is_none() {
+            spans.push(Span::styled(row.clone(), body_style));
+        } else {
+            spans.extend(mermaid::colorize_line(&row, ctx.theme));
+        }
+        spans.push(Span::styled(
+            format!(
+                "{} │",
+                " ".repeat(body_width.saturating_sub(display_width(&row)))
+            ),
+            frame_style,
+        ));
+        // Extremely narrow nested blocks still obey their cell budget.
+        if frame_width < gutter + 2 {
+            let text: String = spans
+                .iter()
+                .skip(prefix.len())
+                .map(|s| s.content.as_ref())
+                .collect();
+            push_frame(lines, text);
+        } else {
+            lines.push(Line::from(spans));
+        }
+    }
+    let notice = if rendered.is_none() {
+        "loading · v open · Enter copy source".to_string()
+    } else if warning.is_some() {
+        format!(
+            "{} {canvas_width}×{canvas_height} · warning · v open/source: {}",
+            if source_complete {
+                "source"
+            } else if clipped {
+                "clipped"
+            } else {
+                "preview"
+            },
+            warning.unwrap()
+        )
+    } else if preview.is_some_and(|p| p.overview) {
+        format!(
+            "overview · {} nodes collapsed · v open full",
+            preview.unwrap().hidden_nodes
+        )
+    } else if clipped {
+        format!("clipped {canvas_width}×{canvas_height} · v open · / search in viewer")
+    } else {
+        format!("{canvas_width}×{canvas_height} · v open · Enter copy source")
+    };
+    push_notice(lines, &notice);
+    if !context.complete && preview.is_some_and(|p| !p.nodes.is_empty()) {
+        push_notice(
+            lines,
+            &format!("spacing {} · layout units", context.options),
+        );
+    }
+    if (clipped || preview.is_some_and(|p| p.overview)) && !context.complete {
+        let detail = if context.cache.is_some() {
+            format!(
+                "{} {canvas_width}×{canvas_height} · x={start_x} y={start_y}",
+                if clipped { "clipped" } else { "view" }
+            )
+        } else {
+            format!(
+                "{} {canvas_width}×{canvas_height} · --mermaid-full for full export",
+                if clipped { "clipped" } else { "view" }
+            )
+        };
+        push_notice(lines, &detail);
+    }
+    push_frame(
+        lines,
+        format!("└{}┘", "─".repeat(frame_width.saturating_sub(2))),
+    );
+    BlockLayout {
+        prefix_width,
+        rendered_width: frame_width,
+    }
 }
 
 pub(super) fn push_rule_line(

@@ -1,6 +1,6 @@
 use super::App;
 use crate::markdown::{
-    hash_file_contents, hash_str, parse_markdown_with_width, read_file_state, ParseResult,
+    hash_file_contents, hash_str, parse_markdown_with_options, read_file_state, ParseResult,
 };
 use std::{
     path::PathBuf,
@@ -34,6 +34,7 @@ impl App {
             line_number_map,
             source_line_map,
             code_blocks,
+            diagrams,
         } = parsed;
 
         self.plain_lines = build_searchable_lines(&lines)
@@ -47,6 +48,7 @@ impl App {
         self.link_spans_by_line = super::links::link_spans_to_map(link_spans);
         self.hovered_link = None;
         self.set_code_blocks(code_blocks);
+        self.set_diagrams(diagrams);
         self.code_select = None;
         self.set_line_maps(line_number_map, source_line_map);
         self.refresh_static_caches();
@@ -56,15 +58,16 @@ impl App {
         self.reset_numkey_state();
         self.clear_toc_scroll_state();
         let path = match &self.filepath {
-            Some(p) => p,
+            Some(p) => p.clone(),
             None => return false,
         };
-        let src = match std::fs::read_to_string(path) {
+        let src = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(_) => return false,
         };
-        let file_state = read_file_state(path);
+        let file_state = read_file_state(&path);
         let content_hash = hash_str(&src);
+        self.reset_diagram_document();
         self.source = if self.file_mode {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             Self::fence_wrap(&src, ext)
@@ -95,7 +98,7 @@ impl App {
         self.file_mode = is_code_file;
         let theme = current_syntect_theme(themes);
         let at = app_theme();
-        let parsed = parse_markdown_with_width(
+        let parsed = parse_markdown_with_options(
             &src,
             ss,
             theme,
@@ -103,8 +106,10 @@ impl App {
             &at.markdown,
             self.file_mode,
             self.code_line_numbers,
+            self.mermaid_context(),
         );
 
+        self.reset_diagram_document();
         let first_load = self.filepath.is_none();
         self.filename = filename;
         self.source = src;
@@ -135,10 +140,13 @@ impl App {
     }
 
     pub(crate) fn reparse_source(&mut self, ss: &SyntaxSet, themes: &ThemeSet) {
+        let diagram_anchor =
+            (!self.diagrams.blocks.is_empty()).then(|| self.diagram_reflow_anchor());
+        let selected = self.code_select;
         let theme = current_syntect_theme(themes);
         let at = app_theme();
         let old_total = self.total();
-        let parsed = parse_markdown_with_width(
+        let parsed = parse_markdown_with_options(
             &self.source,
             ss,
             theme,
@@ -146,6 +154,7 @@ impl App {
             &at.markdown,
             self.file_mode,
             self.code_line_numbers,
+            self.mermaid_context(),
         );
         let new_total = parsed.lines.len();
 
@@ -158,6 +167,10 @@ impl App {
         self.invalidate_theme_preview_cache();
         self.store_current_theme_preview_from(&parsed.lines, &parsed.toc);
         self.replace_content(parsed);
+        if let Some(anchor) = diagram_anchor {
+            self.restore_diagram_source_anchor(anchor);
+            self.code_select = selected.filter(|&i| i < self.code_blocks.len());
+        }
         self.goto_line.target = None;
         self.goto_line.error = false;
         if !self.search.query.is_empty() && !self.search.mode {

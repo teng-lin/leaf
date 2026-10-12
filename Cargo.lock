@@ -1061,6 +1061,7 @@ dependencies = [
  "sha2",
  "syntect",
  "toml",
+ "unicode-segmentation",
  "unicode-width",
  "unicodeit",
 ]
@@ -1211,8 +1212,7 @@ dependencies = [
 [[package]]
 name = "mmdflux"
 version = "2.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c78ba54627b01d793871184731714c11b41796326207c1fb8fd378e118800721"
+source = "git+https://github.com/teng-lin/mmdflux?rev=1921b83eacf5d467f7d33b5f539c5d8780dab8f7#1921b83eacf5d467f7d33b5f539c5d8780dab8f7"
 dependencies = [
  "clap",
  "libc",
@@ -1223,6 +1223,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
  "unicode-width",
  "windows-sys 0.52.0",
  "xterm-color",

@@ -1,6 +1,7 @@
 # Custom
 *.rl
 /.notes
+.DS_Store
 
 # Rust/Cargo
 /debug
@@ -13,3 +14,7 @@ npm/platforms/*/leaf.exe
 
 # Logs
 *.log
+
+# Generated terminal verification artifacts (keep fixtures and harnesses)
+__pycache__/
+/docs/terminal-diagrams-evidence/
